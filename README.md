@@ -132,11 +132,21 @@ node test/unit.mjs
 
 ## 安装
 
-```js
-plugin_manager({ action: 'install_bundle', target: '/Users/loong/workspace/code/github/dsh-tool-wait-until' })
+从 npm 安装：
+
+```sh
+dsh plugin --profile web add dsh-tool-wait-until
 ```
 
-安装后由 Plugin Manager 写入 profile 的 `package.json` 与 bundle 列表，`cordis.patch.yml` 插入 `tool-wait-until` 条目。卸载用 `plugin_manager remove_bundle`。
+桌面应用里也可以直接在插件管理器中搜索安装。要求 dsh 0.2.1 或更高（见 `engines.dsh`），实测版本 0.2.1-rc.5。
+
+**本地开发**时用链接方式安装源码目录，改动即时生效：
+
+```sh
+dsh plugin --profile web add link:/path/to/dsh-tool-wait-until
+```
+
+安装后 Plugin Manager 会把包写入 profile 的 `package.json` 与 bundle 列表，`cordis.patch.yml` 插入 `tool-wait-until` 条目；卸载时从插件管理器移除即可。
 
 ## 已知限制
 
