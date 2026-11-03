@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Wait until: event-driven wait",
+    "description": "Wait for background jobs, teammates, files and logs with fail-fast, stall detection and one structured result, instead of burning a full timeout and querying again."
+  }
+}

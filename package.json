@@ -1,0 +1,51 @@
+{
+  "name": "dsh-tool-wait-until",
+  "version": "1.0.0",
+  "description": "Event-driven wait for DeepSeek Harness: returns the moment the target completes, fails early, or stalls — instead of burning a full timeout and querying again. Also blocks sleep-polling and over-long waits.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "wait",
+    "timeout",
+    "background-jobs",
+    "stall-detection",
+    "polling",
+    "agent-tools"
+  ],
+  "license": "MIT",
+  "author": "tongshuanglong <tongsh6@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tongsh6/dsh-tool-wait-until.git"
+  },
+  "homepage": "https://github.com/tongsh6/dsh-tool-wait-until#readme",
+  "bugs": {
+    "url": "https://github.com/tongsh6/dsh-tool-wait-until/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
