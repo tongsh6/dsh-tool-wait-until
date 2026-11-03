@@ -1,5 +1,13 @@
 # watch 插件改造前基线实测报告
 
+> **归档说明（2026-11-04 更新）**
+>
+> 本报告是插件开发前对 DSH 原生 `job_output` / `wait_agent` 的基线实测，正文保留当时原文，未改写。
+>
+> - 插件当时尚未定名，标题中的 `watch` 即现在的 **`wait_until`**；包名 `dsh-tool-wait-until`，当前已发布 npm 1.0.5。
+> - 源码位置由 `~/dsh-plugins/` 迁移至 `~/workspace/code/github/dsh-tool-wait-until`。
+> - 报告结论的用途是「改造前对照」，不代表当前插件行为。
+
 - 实测人：`baseline-prober`（Team Lead：`lead`）
 - 实测时间：2026-11-04 01:11:26 – 01:13:39（CST，Asia/Shanghai）
 - 环境：macOS 26.6.2 (25G83)；Node v24.19.0（nvm）；DSH Web GUI `http://127.0.0.1:52805`

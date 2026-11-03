@@ -1,5 +1,15 @@
 # watch 插件验收实测报告（独立交叉验收）
 
+> **归档说明（2026-11-04 更新）**
+>
+> 本报告是插件公开发布前的独立交叉验收记录，正文保留当时原文，未改写。与当前状态的差异如下：
+>
+> - **工具名**：报告写作时工具名为 `watch`，现已定名为 **`wait_until`**（包名 `dsh-tool-wait-until`）。
+> - **源码位置**：当时为 `/Users/loong/dsh-plugins/dsh-tool-watch`，现为 `~/workspace/code/github/dsh-tool-wait-until`。
+> - **被测版本**：当时为 v1.0.0 的「修复前版本」。退出码非零未判 `failed` 的问题已在 **1.0.3** 修复并线上验证（同一作业现返回 `failed` + 「退出码 3」+ stderr 尾），报告中标记「未通过」的用例 1a/1e 现已通过。
+> - **「需重启 Desktop 生效」**：已通过改名（模块路径变化 → 新的 ESM URL）绕过，当前不再需要重启。
+> - 插件已发布到 npm（当前 1.0.5），profile 改为从 npm 安装。
+
 - 实测人：`baseline-prober`（Team Lead：`lead`）
 - 实测时间：2026-11-04 01:22:08 – 01:25:19（CST，Asia/Shanghai）
 - 环境：macOS 26.6.2 (25G83)；Node v24.19.0（nvm）；DSH Web GUI `http://127.0.0.1:52805`
