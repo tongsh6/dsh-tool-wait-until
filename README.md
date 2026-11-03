@@ -6,8 +6,10 @@
 **Event-driven waiting for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).** It gives the model a `wait_until` tool that returns the moment a background job finishes, a teammate goes idle, a file appears, or a log line matches — and fails fast on nonzero exit codes, error patterns and stalls, instead of burning a full timeout. It also **blocks the model's favorite empty-wait paths**: `sleep`-polling in bash and over-long `job_output` / `wait_agent` waits.
 
 ```sh
-dsh plugin add dsh-tool-wait-until
+dsh plugin --profile web add dsh-tool-wait-until
 ```
+
+Requires dsh 0.2.1 or later (declared as `engines.dsh`); verified against 0.2.1-rc.5. In the desktop app, install it from its plugin manager instead.
 
 - **One call, one verdict**: `status` is `completed` / `failed` / `stalled` / `timeout` / `cancelled`, plus `elapsed`, `failure_reason` and `output_tail` — no second query needed.
 - **Event-driven**: job settle / output growth wakes the wait immediately, independent of `poll_interval_sec`.
