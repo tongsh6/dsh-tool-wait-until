@@ -53,5 +53,15 @@ jobs:
           fi
           echo "版本一致：$version"
 
+      - name: 检查版本是否已发布（幂等，避免 tag 重推时 409）
+        id: check
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "dsh-tool-wait-until@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "版本 $version 已在 npm 上，跳过发布"
+          fi
+
       - name: 发布到 npm
+        if: steps.check.outputs.published != 'true'
         run: npm publish --access public --provenance
