@@ -811,7 +811,9 @@ const WAIT_UNTIL_RESULT_SCHEMA = {
 }
 
 function renderWaitUntilResult(_args, value) {
-  const lines = [`[wait_until ${value.status}] 耗时 ${value.elapsed}（${value.elapsed_ms}ms）`]
+  // elapsed 是 elapsed_ms 的可读形式；短耗时下两者同义，避免渲染成「1ms（1ms）」
+  const elapsedDetail = value.elapsed_ms >= 1000 ? `（${value.elapsed_ms}ms）` : ''
+  const lines = [`[wait_until ${value.status}] 耗时 ${value.elapsed}${elapsedDetail}`]
   if (value.failure_reason !== undefined) lines.push(`失败原因：${value.failure_reason}`)
   if (value.stalled_for_sec !== undefined) lines.push(`无进展持续 ${value.stalled_for_sec}s`)
   if (value.matched.length > 0) lines.push(`已满足：${value.matched.join('；')}`)

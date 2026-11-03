@@ -501,6 +501,26 @@ function testGuards() {
   check(typeof longWaitGuard({ name: 'wait_until', arguments: {} }) === 'undefined', 'wait_until 自身不应被拦截')
 }
 
+async function testRendering() {
+  const jobs = createMockJobs()
+  jobs.__seed('job-render', { status: 'completed', detail: 'exit code: 0', chunks: [{ at: 0, text: 'ok\n', channel: 'stdout' }] })
+  const harness = createHarness({ jobs })
+  const { result } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'job', id: 'job-render' }],
+    fail_fast: true,
+    timeout_sec: 5,
+    poll_interval_sec: 1,
+  })
+  const text = harness.tool.output.render({}, result)[0].text
+  check(text.includes('[wait_until completed]'), '渲染应含状态行', text)
+  // 短耗时只显示可读形式，不应渲染成「1ms（1ms）」这样的重复
+  if (result.elapsed_ms < 1000) {
+    check(!text.includes(`（${result.elapsed_ms}ms）`), '短耗时不应重复显示毫秒', text)
+  } else {
+    check(text.includes(`（${result.elapsed_ms}ms）`), '长耗时应附带毫秒', text)
+  }
+}
+
 function testPromptPolicy() {
   const harness = createHarness({ jobs: createMockJobs() })
   equal(harness.sections.length, 1, '应注册一段系统提示词')
@@ -540,6 +560,7 @@ const cases = [
   testTimeout,
   testStall,
   testGuards,
+  testRendering,
   testPromptPolicy,
 ]
 

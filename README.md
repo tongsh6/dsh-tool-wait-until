@@ -116,7 +116,7 @@ cordis.patch.yml 插入 Loader 条目
 package.json     bundle 清单（dsh.bundle.patch 指向 patch）
 locale/          中英文显示元数据（Plugin Manager / Settings 用）
 icon.svg         插件图标
-test/unit.mjs    本地单测（mock 服务，215 条断言，不依赖运行时）
+test/unit.mjs    本地单测（mock 服务，250+ 条断言，不依赖运行时）
 docs/baseline.md 改造前基线实测报告
 ```
 
@@ -133,7 +133,7 @@ node test/unit.mjs
 ## 安装
 
 ```js
-plugin_manager({ action: 'install_bundle', target: '/Users/loong/dsh-plugins/dsh-tool-wait-until' })
+plugin_manager({ action: 'install_bundle', target: '/Users/loong/workspace/code/github/dsh-tool-wait-until' })
 ```
 
 安装后由 Plugin Manager 写入 profile 的 `package.json` 与 bundle 列表，`cordis.patch.yml` 插入 `tool-wait-until` 条目。卸载用 `plugin_manager remove_bundle`。
@@ -160,4 +160,4 @@ plugin_manager({ action: 'install_bundle', target: '/Users/loong/dsh-plugins/dsh
 2. **等待中被事件唤醒**：后台启动 `sh -c 'sleep 20; echo "EXIT=3" >&2; exit 3'`，在运行中用 `poll_interval_sec:10` 调 `wait_until` → 期望在约 20 秒的失败瞬间返回，而不是等到 30 秒的轮询边界。
 3. **卡住检测**：后台启动 `sh -c 'sleep 300'`，`wait_until({conditions:[{kind:"job",id:"<id>"}], stall_after_sec:5, timeout_sec:60})` → 期望约 5 秒返回 `stalled`，测完 `job_kill`。
 
-`node test/unit.mjs` 覆盖上述语义（249 条断言）。
+`node test/unit.mjs` 覆盖上述语义（250+ 条断言）。
