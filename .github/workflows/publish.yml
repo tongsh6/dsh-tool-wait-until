@@ -1,0 +1,57 @@
+# 推送 v* tag 时自动发布到 npm。
+#
+# 认证方式：npm Trusted Publishing（OIDC）。
+#   npm 已开始限制「bypass 2FA 的 granular token」用于直接发布，
+#   OIDC 无需任何长期 token，且自动生成 provenance 证明。
+#
+# 首次使用前需在 npm 包页面配置一次：
+#   https://www.npmjs.com/package/dsh-tool-wait-until/access
+#   → Trusted Publisher → GitHub Actions
+#   → 填 owner=tongsh6, repository=dsh-tool-wait-until, workflow=publish.yml
+#
+# 若暂时不想配 OIDC，可改用仓库 Secret：
+#   1. 仓库 Settings → Secrets and variables → Actions → 新建 NPM_TOKEN（granular token）
+#   2. 把下面「发布到 npm」一节的 env 改成：
+#        env:
+#          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # OIDC 交换 npm 发布凭证所需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 升级 npm（Trusted Publishing 需要 11.5+）
+        run: npm install -g npm@latest
+
+      - name: 单元测试
+        run: node test/unit.mjs
+
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag 与 package.json 的 version $version 不一致，拒绝发布" >&2
+            exit 1
+          fi
+          echo "版本一致：$version"
+
+      - name: 发布到 npm
+        run: npm publish --access public --provenance
