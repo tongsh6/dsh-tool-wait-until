@@ -28,7 +28,7 @@ Requires dsh 0.2.1 or later (declared as `engines.dsh`); verified against 0.2.1-
 | 现象 | 现有行为 |
 | --- | --- |
 | 等 teammate | `wait_agent(timeout=30min)` 在对方卡死时等满 30 分钟，且只返回一个布尔值，事后还得查 `list_agents` |
-| 等后台脚本 | `job_output(wait:true, timeout=15min)` 在作业卡住时等满上限 |
+| 等后台脚本 | `job_output(wait:true, timeout=15min)` 在作业卡住时等满上限，等待期间看不到任何进展 |
 | 手工轮询 | `sleep 90` → 查文件 → 再估时间 → 再 sleep，一轮往返 1.5 分钟 |
 | 等待中不可观测 | 只看得到「在等」，看不到中间日志、产出进度，无法判断「在跑」还是「卡住」 |
 | 超时 ≠ 失败 | 超时返回后还要再查一轮才知道是超时、失败还是成功 |
@@ -53,7 +53,7 @@ wait_until({
   stall_after_sec: 120,     // 连续 120s 无任何进展 → 立刻返回 stalled
   timeout_sec: 900,         // 总兜底，不是主要判定手段
   poll_interval_sec: 2,
-}) 
+})
 ```
 
 返回（一次调用即可决策，无需二次查询）：
@@ -64,12 +64,14 @@ wait_until({
   "elapsed_ms": 1250,
   "elapsed": "1.2s",
   "matched": ["后台作业 bash-xxxx（结束）"],
-  "conditions": [{ "condition": "后台作业 bash-xxxx（结束）", "state": "failed", "detail": "状态 failed — exit code: 3" }],
-  "failure_reason": "后台作业 bash-xxxx 失败：exit code: 3",
+  "conditions": [{ "condition": "后台作业 bash-xxxx（结束）", "state": "failed", "detail": "状态 completed — exit code: 3" }],
+  "failure_reason": "后台作业 bash-xxxx 失败：退出码 3",
   "output_tail": "BOOM: intentional failure\n",
   "hint": "目标已失败，不必再等：按 output_tail / failure_reason 决策……"
 }
 ```
+
+注意上例的 `detail`：平台把「进程退出但退出码非零」记为 `completed`，本插件会识别该退出码并自行判定为 `failed` —— 否则下游会把「脚本报错」当成成功。
 
 `status` 五态：`completed` / `failed` / `stalled` / `timeout` / `cancelled`。**超时不是失败**，单独一态。
 
@@ -90,7 +92,7 @@ wait_until({
 - `false`：关闭
 - 数组：`job_failed` / `job_killed` / `exit_code_nonzero` / `agent_failed` / `stderr_matches:/re/` / `output_matches:/re/`
 
-`exit_code_nonzero` 会从作业输出尾部识别 `EXIT=N`（N≠0），因此**进程还没退出、但日志已宣布失败**时也能提前返回。
+`job_failed` 与 `exit_code_nonzero` 都会识别两种失败信号：平台记录的退出码（`detail: "exit code: N"`，N≠0）和作业输出里的 `EXIT=N`（N≠0）。因此**进程还没退出、但日志已宣布失败**时也能提前返回。
 
 ## 事件驱动到什么程度
 
@@ -111,16 +113,16 @@ wait_until({
 ## 文件结构
 
 ```
-index.js         插件本体（零依赖，不 import 任何 @deepseek-ai 包）
-cordis.patch.yml 插入 Loader 条目
-package.json     bundle 清单（dsh.bundle.patch 指向 patch）
-locale/          中英文显示元数据（Plugin Manager / Settings 用）
-icon.svg         插件图标
-test/unit.mjs    本地单测（mock 服务，250+ 条断言，不依赖运行时）
-docs/baseline.md 改造前基线实测报告
+index.js           插件本体（零依赖，不 import 任何 @deepseek-ai 包）
+cordis.patch.yml   插入 Loader 的条目（name 必须与 package.json 的 name 一致）
+package.json       bundle 清单（dsh.bundle.patch 指向 patch）
+locale/            中英文显示元数据（Plugin Manager / Settings 用）
+icon.svg           插件图标
+test/unit.mjs      本地单测（mock 服务，251 条断言，不依赖运行时）
+docs/              仓库内文档，不发布到 npm：改造前基线实测、独立交叉验收报告
 ```
 
-零依赖的原因：profile 的 `node_modules` 里没有 `@deepseek-ai/dsh-tools` 等包，插件里 import 它们会解析失败。工具 schema 直接手写标准 JSON Schema（`parameters` 原样投影给模型，`output.schema` 由 `tools.register` 校验）。
+零依赖的原因：插件运行在宿主进程里，profile 的 `node_modules` 并不保证提供 `@deepseek-ai/dsh-tools` 等包，import 它们会解析失败。工具 schema 直接手写标准 JSON Schema（`parameters` 原样投影给模型，`output.schema` 由 `tools.register` 校验）。
 
 ## 本地测试
 
@@ -128,7 +130,7 @@ docs/baseline.md 改造前基线实测报告
 node test/unit.mjs
 ```
 
-覆盖：立即失败、完成事件唤醒（poll 间隔 5s 时仍 <1.5s 返回）、卡住检测、超时、取消、批量 fail_fast、文件出现/变化、日志已命中/新增命中、队友空闲/失败、参数校验、两条 guard 规则、系统提示词注册。
+覆盖：立即失败、非零退出码识别、完成事件唤醒（poll 间隔 5s 时仍 <1.5s 返回）、卡住检测、超时、取消、批量 fail_fast、wait_all 语义、文件出现/变化、日志已命中/新增命中、队友空闲/失败、参数校验、两条 guard 规则、系统提示词注册、渲染格式。
 
 ## 安装
 
@@ -156,18 +158,8 @@ dsh plugin --profile web add link:/path/to/dsh-tool-wait-until
 - 日志跨轮读取按字节窗口进行，多字节字符在窗口边界可能短暂出现替换符，不影响 ASCII 正则（如 `EXIT=0`、`error`）匹配。
 - 多 `conditions` 是 `wait_all` 语义（全部满足才 `completed`），`fail_fast` 命中时任一失败即 `failed`。
 
-## 修复版生效说明（重要）
+## 开发注意
 
-`index.js` 中「进程退出码非零 → `failed`」的修复只对**新加载的模块**生效：DSH 会在宿主进程内缓存已加载的插件模块，因此只修改本地 link 包的 JS 再重装，运行中的进程仍跑旧代码。
+DSH 会在宿主进程内缓存已加载的插件模块：只修改本地 link 包的 JS 再重装，运行中的进程仍跑旧代码，需要重启 Desktop 才生效。改动模块路径（改包名或目录）会得到新的 ESM URL，重装后可免重启加载。
 
-本次从 `dsh-tool-watch` 改名为 `dsh-tool-wait-until` 恰好绕开了这个限制——**模块路径变了就是新的 ESM URL**，重装后新代码立即加载，无需重启。实测同一个「退出码 3」的作业已从 `completed` 变为 `failed`（`failure_reason` 含「退出码 3」，`output_tail` 含 stderr）。
-
-以后若只改 `index.js` 而不改路径，仍需要重启 Desktop；想免重启，可改包名或目录后重新安装。
-
-下面的回归清单保留，供重启后或换环境时验证：
-
-1. **退出码识别**：后台启动 `sh -c 'echo BOOM >&2; exit 3'`，拿到 job id 后 `wait_until({conditions:[{kind:"job",id:"<id>"}], fail_fast:true, timeout_sec:60})` → 期望 `status: "failed"`、`failure_reason` 含「退出码 3」、`output_tail` 含 `BOOM`。
-2. **等待中被事件唤醒**：后台启动 `sh -c 'sleep 20; echo "EXIT=3" >&2; exit 3'`，在运行中用 `poll_interval_sec:10` 调 `wait_until` → 期望在约 20 秒的失败瞬间返回，而不是等到 30 秒的轮询边界。
-3. **卡住检测**：后台启动 `sh -c 'sleep 300'`，`wait_until({conditions:[{kind:"job",id:"<id>"}], stall_after_sec:5, timeout_sec:60})` → 期望约 5 秒返回 `stalled`，测完 `job_kill`。
-
-`node test/unit.mjs` 覆盖上述语义（250+ 条断言）。
+发布用 GitHub Actions：推送 `v*` tag 触发 `.github/workflows/publish.yml`，先跑单测、校验 tag 与 `package.json` 版本一致、检查该版本是否已存在，然后发布到 npm。
