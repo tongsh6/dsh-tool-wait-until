@@ -1,4 +1,4 @@
 - insert:
     - id: tool-wait-until
-      name: '@local/dsh-tool-wait-until'
+      name: 'dsh-tool-wait-until'
       config: {}
