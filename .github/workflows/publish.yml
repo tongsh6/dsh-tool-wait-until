@@ -64,4 +64,15 @@ jobs:
 
       - name: 发布到 npm
         if: steps.check.outputs.published != 'true'
-        run: npm publish --access public --provenance
+        env:
+          # 优先使用 NPM_TOKEN（granular token，需在仓库 Secrets 配置）；
+          # 未配置时回退到 OIDC Trusted Publishing（npm 11.5+）。
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "使用 NPM_TOKEN 发布"
+            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          else
+            echo "使用 OIDC Trusted Publishing 发布"
+          fi
+          npm publish --access public --provenance
