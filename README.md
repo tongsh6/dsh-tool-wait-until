@@ -13,13 +13,14 @@ Requires dsh 0.2.1 or later (declared as `engines.dsh`); verified against 0.2.1-
 
 - **One call, one verdict**: `status` is `completed` / `failed` / `stalled` / `timeout` / `cancelled`, plus `elapsed`, `failure_reason` and `output_tail` — no second query needed.
 - **Event-driven**: job settle / output growth wakes the wait immediately, independent of `poll_interval_sec`.
-- **Stall detection**: no progress for N seconds returns `stalled` instead of waiting out the timeout.
-- **Behavior guard**: foreground `sleep >= 20s` and waits over 120s are rejected with a ready-to-use replacement.
+- **Stall detection**: no progress for N seconds returns `stalled` instead of waiting out the timeout. Job conditions default to 180s (`stall_after_sec: 0` disables).
+- **Actionable timeout**: a timeout returns `suggested_timeout_sec` (≈2× elapsed, min 120) so the model retries once instead of creeping 60→90→120.
+- **Behavior guard**: foreground `sleep >= 20s` and waits over 120s are rejected with a ready-to-use replacement; repeated `job_output` polling is discouraged in the prompt policy.
 - **Zero dependencies**, standard JSON Schema, Node 20+.
 
 中文说明见下。
 
-消除 DSH 里「空等」的 Host 插件。它给模型一个**事件驱动**的等待原语 `wait_until`，并**主动拦截**模型最容易走的空等路径（`sleep` 轮询、超长 `job_output` / `wait_agent`）。
+消除 DSH 里「空等」的 Host 插件。它给模型一个**事件驱动**的等待原语 `wait_until`，并**主动拦截**模型最容易走的空等路径（`sleep` 轮询、超长 `job_output` / `wait_agent`、反复轮询 `job_output`）。作业条件默认 180 秒无进展即返回 `stalled`；`timeout` 会顺带给出 `suggested_timeout_sec`，避免模型用 60→90→120 小步试错。
 
 ## 要解决的问题
 
@@ -97,6 +98,7 @@ wait_until({
 ## 事件驱动到什么程度
 
 - 作业条件：订阅 `jobs.events`，作业 settle / 输出增长 / progress 时立刻唤醒主循环，不受 `poll_interval_sec` 限制。
+- 卡住提前返回：作业条件未显式设置 `stall_after_sec` 时默认 180 秒无进展即返回 `stalled`（显式传 `0` 关闭），不需要靠「小 timeout + 反复重试」试探。
 - 文件 / 日志 / 队友：按 `poll_interval_sec` 采样（默认 2s）。
 - 取消：全程响应 `exec.signal`，调用方打断时立即返回 `cancelled`。
 
@@ -110,6 +112,8 @@ wait_until({
 
 其余调用一律放行。`sleep 3`、后台 `sleep`、普通命令不受影响。
 
+`job_output` 的短轮询（不带 `wait` 的反复调用）不做硬拦截，只在系统提示词里劝阻：每次轮询占一个步骤，且拿不到失败判定；等待作业应使用 `wait_until`，需要日志时读一次即可。
+
 ## 文件结构
 
 ```
@@ -118,7 +122,7 @@ cordis.patch.yml   插入 Loader 的条目（name 必须与 package.json 的 nam
 package.json       bundle 清单（dsh.bundle.patch 指向 patch）
 locale/            中英文显示元数据（Plugin Manager / Settings 用）
 icon.svg           插件图标
-test/unit.mjs      本地单测（mock 服务，251 条断言，不依赖运行时）
+test/unit.mjs      本地单测（mock 服务，274 条断言，不依赖运行时）
 docs/              仓库内文档，不发布到 npm：改造前基线实测、独立交叉验收报告
 ```
 
@@ -130,7 +134,7 @@ docs/              仓库内文档，不发布到 npm：改造前基线实测、
 node test/unit.mjs
 ```
 
-覆盖：立即失败、非零退出码识别、完成事件唤醒（poll 间隔 5s 时仍 <1.5s 返回）、卡住检测、超时、取消、批量 fail_fast、wait_all 语义、文件出现/变化、日志已命中/新增命中、队友空闲/失败、参数校验、两条 guard 规则、系统提示词注册、渲染格式。
+覆盖：立即失败、非零退出码识别、完成事件唤醒（poll 间隔 5s 时仍 <1.5s 返回）、卡住检测、作业条件默认 stall、超时（含 `suggested_timeout_sec`）、取消、批量 fail_fast、wait_all 语义、文件出现/变化、日志已命中/新增命中、队友空闲/失败、队友 stalled 语义、参数校验、两条 guard 规则、系统提示词注册、渲染格式。
 
 ## 安装
 
@@ -154,6 +158,7 @@ dsh plugin --profile web add link:/path/to/dsh-tool-wait-until
 
 - 模型在**思考阶段**是否萌生「等 180 秒」的念头无法直接干预；本插件只保证这个念头一旦落成工具调用就会被拦下并改道。
 - `agent` 条件依赖 Agent Teams 服务；非 Team 会话调用会立即返回 `failed` 并说明原因，不会空等。
+- `agent` 条件没有「活动」信号，只有成员状态与 diagnostics：队友跑长任务时，`stalled` 表示「状态长时间未变化」而非一定卡死，返回提示已改为「可能是长任务」。
 - `wait_agent` / `job_output` 的拦截是硬拒绝，模型会消耗一步重试；拒绝原因里已附可直接复制的替代调用。
 - 日志跨轮读取按字节窗口进行，多字节字符在窗口边界可能短暂出现替换符，不影响 ASCII 正则（如 `EXIT=0`、`error`）匹配。
 - 多 `conditions` 是 `wait_all` 语义（全部满足才 `completed`），`fail_fast` 命中时任一失败即 `failed`。

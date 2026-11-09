@@ -36,6 +36,8 @@ const MIN_POLL_SEC = 0.25
 const MAX_POLL_SEC = 30
 
 const MIN_STALL_SEC = 5
+/** 作业条件未显式指定 stall_after_sec 时的默认无进展阈值（秒）。显式传 0 可关闭。 */
+const DEFAULT_JOB_STALL_SEC = 180
 
 const DEFAULT_TAIL_BYTES = 4096
 const MIN_TAIL_BYTES = 256
@@ -579,8 +581,12 @@ function buildResult(status, startedAt, input) {
   }
   if (input.failureReason !== undefined) value.failure_reason = truncateTail(input.failureReason, 8192)
   if (input.stalledForSec !== undefined) value.stalled_for_sec = input.stalledForSec
+  if (input.suggestedTimeoutSec !== undefined) value.suggested_timeout_sec = input.suggestedTimeoutSec
   if (input.tail !== undefined && input.tail !== '') value.output_tail = truncateTail(input.tail, input.tailBytes ?? DEFAULT_TAIL_BYTES)
-  const hint = input.hint ?? STATUS_HINTS[status]
+  const timeoutHint = input.suggestedTimeoutSec !== undefined
+    ? `本次是超时，不是失败：目标已运行约 ${Math.round(elapsedMs / 1000)} 秒仍未结束。建议直接以 timeout_sec: ${input.suggestedTimeoutSec} 再试一次（不要小步递增）；若是长任务也可先检查目标与日志。`
+    : undefined
+  const hint = input.hint ?? timeoutHint ?? STATUS_HINTS[status]
   if (hint !== undefined) value.hint = hint
   return value
 }
@@ -602,7 +608,11 @@ async function runWaitUntil(ctx, args, exec) {
   const failFast = normalizeFailFast(args.fail_fast)
   const timeoutMs = clamp(numberOr(args.timeout_sec, DEFAULT_TIMEOUT_SEC), MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC) * 1000
   const pollMs = clamp(numberOr(args.poll_interval_sec, DEFAULT_POLL_SEC), MIN_POLL_SEC, MAX_POLL_SEC) * 1000
-  const stallRaw = numberOr(args.stall_after_sec, 0)
+  // 作业条件默认启用 stall：目标没有新输出/状态变化超过窗口就提前返回，
+  // 避免模型靠「小 timeout + 反复重试」试探。显式传 stall_after_sec: 0 可关闭。
+  const stallSpecified = args.stall_after_sec !== undefined && args.stall_after_sec !== null
+  const hasJobCondition = conditions.some((condition) => condition.kind === 'job')
+  const stallRaw = stallSpecified ? numberOr(args.stall_after_sec, 0) : hasJobCondition ? DEFAULT_JOB_STALL_SEC : 0
   const stallMs = stallRaw <= 0 ? 0 : Math.max(stallRaw, MIN_STALL_SEC) * 1000
   const tailBytes = clamp(numberOr(args.output_tail_bytes, DEFAULT_TAIL_BYTES), MIN_TAIL_BYTES, MAX_TAIL_BYTES)
 
@@ -694,14 +704,23 @@ async function runWaitUntil(ctx, args, exec) {
       if (progressed) lastProgressAt = now
 
       if (stallMs > 0 && now - lastProgressAt >= stallMs) {
-        return finish('stalled', {
-          stalledForSec: Math.round((now - lastProgressAt) / 1000),
-          tail: latestTail,
-          matched,
-        })
+        const stalledForSec = Math.round((now - lastProgressAt) / 1000)
+        const pendingKinds = conditions
+          .map((condition, index) => ({ kind: condition.kind, state: rows[index].state }))
+          .filter((row) => row.state === 'pending')
+          .map((row) => row.kind)
+        const onlyAgent = pendingKinds.length > 0 && pendingKinds.every((kind) => kind === 'agent')
+        const hint = onlyAgent
+          ? `队友已持续运行 ${stalledForSec} 秒且状态没有变化。这更可能是长任务而不是卡死：可检查其日志/任务进度，或加大 stall_after_sec / timeout_sec 继续等待；确认卡住时再停止。`
+          : `目标在 ${stalledForSec} 秒内没有任何进展（无新输出、状态未变、文件未更新），可能是长任务或已卡死：检查进程与日志，必要时先停止再重试。`
+        return finish('stalled', { stalledForSec, tail: latestTail, matched, hint })
       }
       const remaining = deadline - now
-      if (remaining <= 0) return finish('timeout', { tail: latestTail, matched })
+      if (remaining <= 0) {
+        const elapsedSec = Math.max(1, Math.round((now - startedAt) / 1000))
+        const suggested = Math.min(MAX_TIMEOUT_SEC, Math.max(120, elapsedSec * 2))
+        return finish('timeout', { tail: latestTail, matched, suggestedTimeoutSec: suggested })
+      }
       await waitForSignal(Math.min(pollMs, remaining), wake, exec.signal)
     }
   } finally {
@@ -758,11 +777,11 @@ const WAIT_UNTIL_PARAMETERS = {
     },
     stall_after_sec: {
       type: 'number',
-      description: '卡住判定：连续这么多秒没有任何进展信号（作业输出/状态、队友状态、文件版本、日志大小都没变）就返回 stalled。0（默认）=关闭。长等待时建议 120–600。',
+      description: `卡住判定：连续这么多秒没有任何进展信号（作业输出/状态、队友状态、文件版本、日志大小都没变）就返回 stalled。未显式指定时：job 条件默认 ${DEFAULT_JOB_STALL_SEC} 秒，其它条件关闭；显式传 0 关闭。`,
     },
     timeout_sec: {
       type: 'number',
-      description: `总兜底超时，默认 ${DEFAULT_TIMEOUT_SEC}，范围 ${MIN_TIMEOUT_SEC}–${MAX_TIMEOUT_SEC}。单次建议 30–60 秒，需要更长等待时反复 wait_until 而不是一次等满。`,
+      description: `总兜底超时，默认 ${DEFAULT_TIMEOUT_SEC}，范围 ${MIN_TIMEOUT_SEC}–${MAX_TIMEOUT_SEC}。目标完成、失败或无进展都会提前返回，它不是实际等待时长；构建类长任务可设 300–600。`,
     },
     poll_interval_sec: {
       type: 'number',
@@ -804,6 +823,7 @@ const WAIT_UNTIL_RESULT_SCHEMA = {
     },
     failure_reason: { type: 'string', description: 'status=failed 时的失败原因（含早期失败检测命中的模式）。' },
     stalled_for_sec: { type: 'number', description: 'status=stalled 时无进展持续的秒数。' },
+    suggested_timeout_sec: { type: 'integer', description: 'status=timeout 时的建议 timeout_sec（约已等待时长的 2 倍，最小 120）。' },
     output_tail: { type: 'string', description: '相关目标最后输出的尾部（作业输出、日志窗口、成员状态等）。' },
     hint: { type: 'string', description: '基于 status 的下一步建议。' },
   },
@@ -860,7 +880,7 @@ const WAIT_UNTIL_USAGE_HINT = `wait_until 用法（条件满足、目标失败�
   wait_until({conditions:[{kind:"file",path:"<path>",until:"exists"}]})                  // 等文件出现
   wait_until({conditions:[{kind:"file",path:"<path>",until:"changed"}], timeout_sec:900, stall_after_sec:120})  // 等文件持续变化，卡住即返回
   wait_until({conditions:[{kind:"log",path:"<path>",matches:"/DONE|EXIT=0/"}]})          // 等日志关键字
-  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:300})  // 等队友`
+  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:120})  // 等队友`
 
 /**
  * 拦截「用 sleep 空等」的前台 bash 调用。
@@ -901,7 +921,7 @@ ${WAIT_UNTIL_USAGE_HINT}`
     const timeout = typeof args.timeout_ms === 'number' ? args.timeout_ms : 30000
     if (timeout <= LONG_WAIT_DENY_MS) return undefined
     return `wait_agent 的单个等待最多 ${LONG_WAIT_DENY_MS / 1000} 秒（本次 ${Math.round(timeout / 1000)} 秒）：它只回一个布尔值，卡住时要等满窗口且事后还得再查。改用 wait_until 的 agent 条件，卡住即返回并带状态快照：
-  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:300})`
+  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:120})`
   }
   return undefined
 }
@@ -910,7 +930,10 @@ ${WAIT_UNTIL_USAGE_HINT}`
 const WAIT_UNTIL_POLICY = `# 等待纪律
 需要等待后台作业、队友、文件或日志时，不要用 sleep 空等或反复轮询：
 - bash 中前台 sleep 达到 ${SLEEP_DENY_SEC} 秒会被拒绝；job_output / wait_agent 单次等待超过 ${LONG_WAIT_DENY_MS / 1000} 秒也会被拒绝。
+- 不要在 job_output 上反复轮询（尤其是不带 wait 的短调用）：每次轮询都占一个步骤，也拿不到失败判定。等待作业用 wait_until；要看日志时用 job_output 读一次即可。
 - 改用 wait_until：条件满足、目标失败或连续无进展时立即返回 status / elapsed / failure_reason / output_tail，一次调用即可判定结果，无需再查一次。
+- timeout 返回时会给出 suggested_timeout_sec：直接按建议值一次性重试，不要 60→90 小步递增。
+- 作业条件未指定 stall_after_sec 时默认 ${DEFAULT_JOB_STALL_SEC} 秒无进展即返回 stalled；agent 条件建议显式设 120 秒以内。
 ${WAIT_UNTIL_USAGE_HINT}
 长等待用 timeout_sec + stall_after_sec 分段，而不是一次设 30 分钟。`
 

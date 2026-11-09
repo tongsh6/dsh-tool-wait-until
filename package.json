@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-wait-until",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "Event-driven wait for DeepSeek Harness: returns the moment the target completes, fails early, or stalls — instead of burning a full timeout and querying again. Also blocks sleep-polling and over-long waits.",
   "keywords": [
     "dsh",

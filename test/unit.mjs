@@ -309,6 +309,46 @@ async function testTimeout() {
   equal(result.status, 'timeout', '超时：status 应为 timeout')
   check(elapsedMs >= 900 && elapsedMs < 3000, '超时：应在 timeout_sec 附近返回', `实际 ${elapsedMs}ms`)
   check(typeof result.hint === 'string', '超时：应给出下一步建议')
+  equal(result.suggested_timeout_sec, 120, '超时：应给出 suggested_timeout_sec=120')
+  check(result.hint.includes('timeout_sec: 120'), '超时：hint 应包含建议值', result.hint)
+}
+
+async function testDefaultJobStall() {
+  const jobs = createMockJobs()
+  jobs.__seed('job-silent', { status: 'running', chunks: [] })
+  const harness = createHarness({ jobs })
+  const { result, elapsedMs } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'job', id: 'job-silent' }],
+    timeout_sec: 1,
+    poll_interval_sec: 0.25,
+  })
+  equal(result.status, 'timeout', '默认 stall：短 timeout 应先返回 timeout，而不是 stalled')
+  check(elapsedMs < 3000, '默认 stall：应在 timeout 附近返回', `实际 ${elapsedMs}ms`)
+  equal(result.suggested_timeout_sec, 120, '默认 stall：timeout 应带建议值')
+
+  // 显式 stall_after_sec: 0 关闭默认 stall
+  const { result: closed } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'job', id: 'job-silent' }],
+    stall_after_sec: 0,
+    timeout_sec: 1,
+    poll_interval_sec: 0.25,
+  })
+  equal(closed.status, 'timeout', '默认 stall：显式传 0 应保持关闭')
+}
+
+async function testAgentStallSemantics() {
+  const teams = createMockTeams([{ id: 'worker', name: 'worker', status: 'running' }])
+  const harness = createHarness({ jobs: createMockJobs(), teams })
+  const { result, elapsedMs } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'agent', target: 'worker', until: 'inactive' }],
+    stall_after_sec: 5,
+    timeout_sec: 30,
+    poll_interval_sec: 0.25,
+  })
+  assertShape(result, '队友卡住检测')
+  equal(result.status, 'stalled', '队友卡住检测：status 应为 stalled')
+  check(elapsedMs >= 4500 && elapsedMs < 9000, '队友卡住检测：应在 stall 窗口附近返回', `实际 ${elapsedMs}ms`)
+  check(result.hint.includes('长任务'), '队友卡住检测：提示应说明可能是长任务而非卡死', result.hint)
 }
 
 async function testCancelled() {
@@ -529,6 +569,8 @@ function testPromptPolicy() {
   check(policy.interpolate === false, '提示词应关闭插值')
   check(policy.text.includes('wait_until'), '提示词应提到 wait_until')
   check(policy.text.includes('sleep'), '提示词应提到 sleep')
+  check(policy.text.includes('job_output 上反复轮询'), '提示词应禁止 job_output 轮询')
+  check(policy.text.includes('suggested_timeout_sec'), '提示词应说明 timeout 建议值')
 }
 
 function testMeta() {
@@ -558,6 +600,8 @@ const cases = [
   testMissingJobIsFatal,
   testCancelled,
   testTimeout,
+  testDefaultJobStall,
+  testAgentStallSemantics,
   testStall,
   testGuards,
   testRendering,
