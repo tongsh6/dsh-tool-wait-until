@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-tool-wait-until)](https://www.npmjs.com/package/dsh-tool-wait-until)
 [![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Event-driven waiting for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).** It gives the model a `wait_until` tool that returns the moment a background job finishes, a teammate goes idle, a file appears, or a log line matches — and fails fast on nonzero exit codes, error patterns and stalls, instead of burning a full timeout. It also **blocks the model's favorite empty-wait paths**: `sleep`-polling in bash and over-long `job_output` / `wait_agent` waits.
+**Event-driven waiting for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).** It gives the model a `wait_until` tool that returns as soon as a watched target settles, fails, or stalls. Job conditions are woken by job events (settle / output growth); file, log and teammate conditions are sampled at `poll_interval_sec` (default 2s). Fail-fast on nonzero exit codes, error patterns and stalls applies instead of waiting out a full timeout. It also **blocks the model's favorite empty-wait paths**: `sleep`-polling in bash and over-long `job_output` / `wait_agent` waits.
 
 ```sh
 dsh plugin --profile web add dsh-tool-wait-until
@@ -20,7 +20,7 @@ Requires dsh 0.2.1 or later (declared as `engines.dsh`); verified against 0.2.1-
 
 中文说明见下。
 
-消除 DSH 里「空等」的 Host 插件。它给模型一个**事件驱动**的等待原语 `wait_until`，并**主动拦截**模型最容易走的空等路径（`sleep` 轮询、超长 `job_output` / `wait_agent`、反复轮询 `job_output`）。作业条件默认 180 秒无进展即返回 `stalled`；`timeout` 会顺带给出 `suggested_timeout_sec`，避免模型用 60→90→120 小步试错。
+消除 DSH 里「空等」的 Host 插件。它给模型一个**事件驱动**的等待原语 `wait_until`：目标完成、失败或连续无进展时立即返回。**事件唤醒只适用于作业条件**（订阅 `jobs.events`）；文件、日志、队友条件按 `poll_interval_sec` 采样（默认 2 秒）。插件**主动拦截**模型最容易走的空等路径（`sleep` 轮询、超长 `job_output` / `wait_agent`、反复轮询 `job_output`）。作业条件默认 180 秒无进展即返回 `stalled`；`timeout` 会顺带给出 `suggested_timeout_sec`，避免模型用 60→90→120 小步试错。
 
 ## 要解决的问题
 
