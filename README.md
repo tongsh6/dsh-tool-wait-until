@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-tool-wait-until)](https://www.npmjs.com/package/dsh-tool-wait-until)
 [![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/tongsh6/dsh-tool-wait-until)
+[![DSH Plugin Hub: listed](https://dshpluginhub.ai/badges/plugins/dsh-tool-wait-until.svg)](https://dshpluginhub.ai/plugins/dsh-tool-wait-until)
 
 **Event-driven waiting for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).** It gives the model a `wait_until` tool that returns as soon as a watched target settles, fails, or stalls. Job conditions are woken by job events (settle / output growth); file, log and teammate conditions are sampled at `poll_interval_sec` (default 2s). Fail-fast on nonzero exit codes, error patterns and stalls applies instead of waiting out a full timeout. It also **blocks the model's favorite empty-wait paths**: `sleep`-polling in bash and over-long `job_output` / `wait_agent` waits.
 
