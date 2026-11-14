@@ -1,20 +1,14 @@
 # 推送 v* tag 时自动发布到 npm。
 #
-# 认证方式：npm Trusted Publishing（OIDC）。
-#   npm 已开始限制「bypass 2FA 的 granular token」用于直接发布，
-#   OIDC 无需任何长期 token，且自动生成 provenance 证明。
+# 认证顺序与下方“发布到 npm”步骤一致：
+#   1. 配置了仓库 Secret NPM_TOKEN 时，优先使用该 token。
+#   2. 未配置 NPM_TOKEN 时，使用 npm Trusted Publishing（OIDC）。
 #
-# 首次使用前需在 npm 包页面配置一次：
+# OIDC 首次使用前需在 npm 包页面配置 Trusted Publisher：
 #   https://www.npmjs.com/package/dsh-tool-wait-until/access
-#   → Trusted Publisher → GitHub Actions
-#   → 填 owner=tongsh6, repository=dsh-tool-wait-until, workflow=publish.yml
+#   → owner=tongsh6, repository=dsh-tool-wait-until, workflow=publish.yml
 #
-# 若暂时不想配 OIDC，可改用仓库 Secret：
-#   1. 仓库 Settings → Secrets and variables → Actions → 新建 NPM_TOKEN（granular token）
-#   2. 把下面「发布到 npm」一节的 env 改成：
-#        env:
-#          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
+# token 方式直接配置仓库 Secret NPM_TOKEN；无需改写下面的 env 或发布脚本。
 name: publish
 
 on:

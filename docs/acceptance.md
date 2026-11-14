@@ -1,4 +1,147 @@
-# watch 插件验收实测报告（独立交叉验收）
+# wait_until 验收记录
+
+> 当前记录日期：**2026-11-14（Asia/Shanghai）**。本文记录 **v1.2.0** 的本地验收，优化工作以 `160afe7` 为基础。包版本为 `1.2.0`；源码版本、测试通过和 npm 发布是不同事实，发布状态以对应 tag 工作流与 npm 实际记录为准。
+
+[返回使用说明](../README.md) · [原生工具基线](baseline.md)
+
+## 1.2.0 当前验收
+
+| 检查 | 范围 | 已取得的证据 | 结论 |
+| --- | --- | --- | --- |
+| 完整单元回归 | A/B/C 行为与混合挂起 I/O 的 job fail-fast 修复 | Node v24.19.0，43 个用例函数，791 条断言通过，0 失败，36587ms | 当前完整单元回归通过 |
+| 缺陷回归 | 新增 5 个函数、297 条断言，覆盖挂起 cwd/FS、初扫、模式选择及清理 | 旧冻结实现运行新增集：211 通过、10 失败、22089ms；修复后完整集合通过 | 实际复现旧缺陷，修复后回归通过 |
+| 已安装宿主核心服务 | DSH 0.2.2-rc.3，包括真实进程立即/3秒/5秒后失败 | 12 场景、87 断言、0 失败，7256ms，退出码 0 | 具体版本与服务范围通过；不是完整 Desktop/模型会话验收 |
+| 1.2.0 包内容与加载 | 最终冻结源码离线打包、解包与模块导入 | 9 个文件逐字节一致，入口与 guard 导入通过，包大小 26239 字节 | 发布候选包验证通过；临时产物已清理 |
+| 文档与 CI | 使用契约、文档回链、PR/main Node 20/22/24 工作流 | 静态结构核对、历史正文保留与文档链接检查 | 配置检查通过；远端结果需看实际 workflow run |
+
+### 上一阶段记录
+
+| 阶段 | 当时的证据 | 使用边界 |
+| --- | --- | --- |
+| A | 405 条断言通过，0 失败 | 修复组合条件、失败模式、退出标记、观察错误与异步预算时的阶段记录 |
+| B | 38 个用例函数，494 条断言通过，0 失败，27503ms | 默认策略、文件/日志边界、有限 guard 的阶段记录 |
+| C 初次本地回归 | 494 条断言通过，0 失败，27499ms | 混合挂起 I/O 早期失败修复之前；不能冒充 1.2.0 的最终集合 |
+| C 初次宿主验证 | 10 场景、60 断言、0 失败，2374ms | 旧脚本范围；当前结果已扩展为 12 场景、87 断言 |
+| 旧包验证（包版本 1.1.0） | dry-run 与实际包均 9 文件；包内导入、3 个 guard 行为和逐文件一致性检查通过 | 仅证明当时 1.1.0 工作区打包，不能替代 1.2.0 包验证 |
+
+断言数对应各阶段实际执行，不是永久固定数量。新增集合在旧实现上复现了 8 个挂起 I/O 提前失败断言及 2 个初扫相关断言失败；旧版未通过结果没有被当作当前通过证据。
+
+### 可复现的单元回归
+
+在仓库根目录使用 Node >=20：
+
+```sh
+node test/unit.mjs
+```
+
+本机 1.2.0 完整单元验证使用已有 Node v24.19.0；Runner 未提供 `node` 的 PATH 映射时，可使用已安装解释器的绝对路径：
+
+```sh
+/Users/loong/.nvm/versions/node/v24.19.0/bin/node test/unit.mjs
+```
+
+测试使用内存中的 Jobs、FS、Teams 和注册上下文，覆盖结果契约与边界，不证明实际 DSH 服务接口、模块加载、插件管理器或模型行为都已兼容。
+
+2026-11-14 的 1.2.0 完整单元回归输出：
+
+```text
+通过断言 791 条；失败 0 条；耗时 36587ms
+全部通过
+```
+
+### 重要验收语义
+
+- `completed` 只表示等待条件满足；`failed` 也可能来自观察错误。目标是否成功要结合具体状态与 fail-fast 模式。
+- `log.matches` 与 `agent.status_changed` 在本次调用内锁存；`file.exists` 保持当前状态，`file.changed` 保持“当前存在且版本相对首轮不同”，首轮缺失后的首次出现也算变化。
+- job 调用默认总超时 300 秒、整组 stall 180 秒；非 job 默认 60 秒、stall 关闭。显式参数优先，stall 截止点参与唤醒。
+- 整组 stall 表示所有目标没有观察到进展，不是逐个目标检测，也不是已经证明卡死。
+- 取消与总 deadline 覆盖异步 I/O 等待；插件返回 `cancelled`，宿主外层可以有不同包装。本机 DSH 0.2.2-rc.3 Native executor 将 caller abort 呈现为 `isError: true`、`error.info.code: ABORTED`，目标 job 仍在运行；这不表示插件取消值未产生，也不表示任务已停止。
+- `agent_failed` 只在启用时生效；只有显式 `exit_code_nonzero` 使用完整行 `EXIT=N` 日志约定，真实退出码优先。
+- job 失败监视与初扫覆盖工作目录解析之前；事件触发真实状态复查，并以独立采样补充事件漏送。`peek` 不消费正常 probe 的进展状态，确认失败能结束挂起 I/O 的等待，但不停止底层 I/O 或目标，也不会在每次事件到来时重启 I/O。
+- `false`、`[]` 或仅 `agent_failed` 不会被该通道升级成 job fail-fast；事件本身不被当作失败。
+- 永久读取错误及时返回失败；临时错误保留原因，超时时提示检查错误而非盲目延长等待。
+- 日志覆盖/轮转覆盖同尺寸版本变化、缩小和观察到的删除重建；不承诺区分轮询间隙内更大替换与普通追加。
+- guard 是有限字面语法识别，复杂替换/分组/heredoc 保守放行；重复短 `job_output` 只有提示词劝阻。
+- `output_tail` 是最近相关输出，批量等待不保证合并所有目标日志。
+
+### 1.2.0 宿主核心服务验证
+
+2026-11-14 在已安装 DSH **0.2.2-rc.3** 上完成 1.2.0 独立核心服务验证：**12 个场景、87 条断言、0 失败，7256ms，退出码 0**。使用 Cordis **4.1.0** 与安装包内的 Electron Node **24.21.0**。
+
+在仓库根目录执行的实际命令：
+
+```sh
+ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+  --expose-internals test/host-smoke.mjs \
+  --runtime-root "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh"
+```
+
+`--runtime-root` 指向包含 `node_modules/@deepseek-ai` 的 DSH 根目录。对于未打包的运行时，脚本接口为 `node test/host-smoke.mjs --runtime-root /absolute/dsh`；上面记录的 Electron 命令才是本机这次实际验证所用命令。
+
+| 证据项 | 范围与结果 |
+| --- | --- |
+| 服务装配 | 真实 SystemPrompt、ToolsService、Native executor、LocalJobRegistry、LocalFileSystem、SessionProjectionRegistry、WorkingDirectoryService；核心服务没有 mock |
+| 注册与输入 | 真实工具 schema、非法输入检查及卸载路径通过 |
+| 作业 | 通过有限 Node 子进程验证完成事件、输出 cursor、立即/3秒/5秒后的非零退出码 7 与各自 stderr 证据 |
+| guard 管线 | 经过真实 guard/executor 链验证拒绝与放行；bash 测试夹具仅计数和返回固定结果，不执行字符串 shell 命令 |
+| 取消 | 分别验证插件 body 的 `cancelled` 与宿主最终包装的 `ABORTED`；被观察 job 在取消等待后仍运行 |
+| 文件与日志 | 使用真实文件服务验证 `file.changed`、日志匹配锁存、同尺寸日志重写及总 deadline |
+| 清理 | 卸载前活动 job 数为 0（`live_jobs_before_dispose=0`），临时文件已清理 |
+
+### 立即、3 秒与 5 秒失败的本机观测
+
+三个有限真实 Node 进程并行运行，各自独立记录等待开始、进程退出和等待返回时间。每个调用使用 `poll_interval_sec: 10`、`timeout_sec: 15`，并断言等待已在进程退出前开始、退出后 1.5 秒内收到结果。
+
+| 子进程失败时机 | 实际等待 | 插件报告 elapsed | 子进程退出到返回 | stderr 标记 |
+| --- | --- | --- | --- | --- |
+| 立即 exit 7 | 64ms | 63ms | 0ms | `HOST_EXIT_7_DELAY_0` |
+| 约 3 秒后 exit 7 | 3076ms | 3074ms | 1ms | `HOST_EXIT_7_DELAY_3000` |
+| 约 5 秒后 exit 7 | 5073ms | 5073ms | 1ms | `HOST_EXIT_7_DELAY_5000` |
+
+这些数字是本机这一次的观测，不是延迟 SLA，也不能外推为所有环境、模型调用或跨网络通信的保证。
+
+验证采用公开 controller attachment 和无 owner 的有限作业生产者，没有修改用户配置或连接模型。它**未覆盖** Agent Teams、真实 owner/session 授权、正在运行的 Desktop profile、模块缓存/热重载、模型是否遵守提示词，以及 token 或墙钟收益。
+
+C 初次验证曾修正测试夹具多行正则缺少 `m` 的问题，其结果已归入上一阶段。当前 1.2.0 使用扩展后的脚本完整重跑。声明兼容范围仍为 `>=0.2.1-rc.1 <0.3.0`，本次只证明上述具体版本与服务边界。
+
+### 1.2.0 冻结源码包验证
+
+使用 **Node v24.19.0 / npm 11.17.0** 对最终冻结源码执行离线打包。`dsh-tool-wait-until-1.2.0.tgz` 包含 **9 个文件**，大小 **26239 字节**；tar 清单、解包文件与工作区发布文件逐字节一致，实际入口和 guard 均可导入。打包期间源码与 HEAD 没有变化，临时目录、缓存及压缩包已经清理。
+
+发布文件为 `LICENSE`、`README.md`、`cordis.patch.yml`、`icon.svg`、`index.js`、`locale/en.json`、`locale/zh.json`、`package.json`、`wait-guard.js`；不包含 `.idea`、测试或验收文档。本节文档回填不改变上述发布内容。
+
+本地候选包 SHA256：`d7b53e678fc98063a9dea6f964148e96e8056b1354b2480fa97ebe856ac33eb2`。这是本地打包证据，实际 npm 发布仍以对应 workflow、版本与 `gitHead` 核对结果为准。
+
+### 上一阶段包内容与加载验证（包版本 1.1.0）
+
+以下为包版本仍是 **1.1.0** 时的历史验证，不是 1.2.0 包的验收结果。使用 **Node v24.19.0 / npm 11.17.0** 完成离线 dry-run 和临时目录实际打包，均为 **9 个文件**：`LICENSE`、`README.md`、`cordis.patch.yml`、`icon.svg`、`index.js`、`locale/en.json`、`locale/zh.json`、`package.json`、`wait-guard.js`。
+
+验证时的 tar 清单与解包内容一致，包含新 guard 模块，不包含 `.idea`、`test` 或 `docs`。解包后的 `index.js` 可导入，3 个包内 guard 行为通过；9 个文件的打包前源文件、打包后源文件和解包文件 SHA256 逐一一致。临时目录已清理，没有执行 `npm publish`。
+
+以下是当时 1.1.0 工作区验证参数的等价 shell 表示，仅用于保留该次过程；当前版本打包应使用 npm 实际返回的包名，不能沿用下面的旧 tar 文件名：
+
+```sh
+package_tmp="$(mktemp -d)"
+npm pack --json --ignore-scripts --offline --cache "$package_tmp/npm-cache" --dry-run
+npm pack --json --ignore-scripts --offline --cache "$package_tmp/npm-cache" --pack-destination "$package_tmp"
+tar -tzf "$package_tmp/dsh-tool-wait-until-1.1.0.tgz"
+```
+
+当时还将包解开到临时目录，执行包内模块导入和 guard 检查，再清理目录。以上仅证明那次 1.1.0 工作区打包一致性；1.2.0 的独立核验见上一节，未沿用旧包通过结果。
+
+### CI 与发布证据边界
+
+[单测工作流](../.github/workflows/test.yml) 在 pull request 与 push 到 `main` 时运行 Node 20 / 22 / 24 矩阵，直接执行单测，不安装项目依赖、不使用发布凭据，只有仓库读取权限，并设置限时与同分支并发取消。
+
+[发布工作流](../.github/workflows/publish.yml) 继续在 `v*` tag 上执行单测、版本一致性与已发布版本检查。此批仅校正认证顺序注释：有 `NPM_TOKEN` 时先用 token，否则使用 OIDC；没有修改发布行为。
+
+工作流已完成手工结构审查与静态约束核对，未使用 YAML 解析器作验证。远端 CI、tag 发布及 npm 包状态应分别检查其实际运行与版本记录；本文的本地验证不能替代这些发布证据。
+
+---
+
+## 历史报告：watch 插件验收实测报告（独立交叉验收）
+
+> 以下为 **2026-11-04** 的历史归档正文。文中的“当前”、版本、工具名、路径和通过/未通过结论均属于当时环境；不能替代上面的当前批次证据。除新增本节导读外，历史正文保留原文。
 
 > **归档说明（2026-11-04 更新）**
 >
