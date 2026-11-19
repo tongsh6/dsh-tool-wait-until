@@ -1003,7 +1003,7 @@ const WAIT_UNTIL_PARAMETERS = {
   properties: {
     conditions: {
       type: 'array',
-      description: '要等待的条件。默认全部满足才返回 completed（match=all）；match=any 时任一满足即返回。log.matches 和 agent.status_changed 保留本次调用内已观察到的事件；file.exists 等状态条件仍反映当前观察。fail_fast 命中时优先返回 failed。',
+      description: '要等待的条件。默认全部满足才返回 completed（match=all）；match=any 时任一满足即返回。log.matches 和 agent.status_changed 保留本次调用内已观察到的事件；file.exists 等状态条件仍反映当前观察。fail_fast 命中时优先返回 failed；match=any 且已有条件满足时以满足为先。',
       items: CONDITION_SCHEMA,
     },
     match: {
