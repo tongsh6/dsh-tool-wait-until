@@ -52,6 +52,7 @@ const LOG_WINDOW_BYTES = 65536
 const JOB_SETTLED = new Set(['completed', 'killed', 'failed'])
 const AGENT_INACTIVE = new Set(['inactive', 'failed'])
 const CONDITION_KINDS = new Set(['job', 'agent', 'file', 'log'])
+const MATCH_MODES = new Set(['all', 'any'])
 const SIMPLE_FAIL_FAST = new Set(['job_failed', 'job_killed', 'exit_code_nonzero', 'agent_failed'])
 const DEFAULT_FAIL_FAST = ['job_failed', 'job_killed', 'agent_failed']
 
@@ -331,6 +332,21 @@ function normalizeFailFast(value) {
 // 条件探针
 // ---------------------------------------------------------------------------
 
+/**
+ * 条件的人类可读描述。初始快照、早期失败与 matched 共用同一份文本，
+ * 避免工作目录解析前返回时模型只看到 `conditions[0]` 这类占位。
+ */
+function describeCondition(condition) {
+  const until = condition.until
+  if (condition.kind === 'job') return `后台作业 ${condition.id}（${until === 'failed' ? '失败' : '结束'}）`
+  if (condition.kind === 'agent') {
+    const label = until === 'failed' ? '失败' : until === 'status_changed' ? '状态变化' : '空闲'
+    return `队友 ${condition.target ?? '（任意成员）'}（${label}）`
+  }
+  if (condition.kind === 'file') return `文件 ${condition.path}（${until === 'exists' ? '出现' : '变化'}）`
+  return `日志 ${condition.path} 匹配 ${condition.matches}`
+}
+
 /** 展示尾部的裁剪不能制造 EXIT 标记；未知的读取起点先跳过首个不完整行。 */
 function nonzeroExitMarker(text, startsAtLineBoundary) {
   if (!startsAtLineBoundary) {
@@ -403,7 +419,9 @@ function createJobProbe(ctx, condition, caller, failFast, tailBytes) {
     const failed = status === 'failed' || failedExit
     const killed = status === 'killed'
     const settled = JOB_SETTLED.has(status)
-    const detail = `状态 ${status}${job.detail === undefined ? '' : ` — ${job.detail}`}`
+    // detail 文本是宿主的非正式契约：格式变化时不能把它当成「成功」。
+    const unparsedExit = status === 'completed' && exitCode === undefined && !/exit code:/i.test(detailText)
+    const detail = `状态 ${status}${job.detail === undefined ? '' : ` — ${job.detail}`}${unparsedExit ? '（未报告退出码，按已结束处理）' : ''}`
     const satisfied = condition.until === 'failed' ? failed : settled
 
     let fail
@@ -442,7 +460,7 @@ function createJobProbe(ctx, condition, caller, failFast, tailBytes) {
   }
   return {
     label: condition.label,
-    describe: () => `后台作业 ${condition.id}（${condition.until === 'failed' ? '失败' : '结束'}）`,
+    describe: () => describeCondition(condition),
     poll: () => observe(true),
     peek: () => observe(false),
   }
@@ -451,9 +469,7 @@ function createJobProbe(ctx, condition, caller, failFast, tailBytes) {
 /** 队友条件：等待成员变为 inactive / failed，或出现状态变化。 */
 function createAgentProbe(ctx, condition, callerAgent, failFast) {
   const teams = ctx.get('agentTeams')
-  const describe = () => `队友 ${condition.target ?? '（任意成员）'}（${
-    condition.until === 'failed' ? '失败' : condition.until === 'status_changed' ? '状态变化' : '空闲'
-  }）`
+  const describe = () => describeCondition(condition)
   if (teams === undefined || callerAgent === undefined) {
     return {
       label: condition.label,
@@ -516,7 +532,7 @@ function readObservationError(prefix, error) {
 /** 文件条件：等待出现或版本变化。 */
 function createFileProbe(ctx, condition, cwd) {
   const fs = ctx.get('fs')
-  const describe = () => `文件 ${condition.path}（${condition.until === 'exists' ? '出现' : '变化'}）`
+  const describe = () => describeCondition(condition)
   if (fs === undefined) {
     return {
       label: condition.label,
@@ -567,7 +583,7 @@ function createFileProbe(ctx, condition, cwd) {
 /** 日志条件：等待文件内容命中正则。 */
 function createLogProbe(ctx, condition, cwd) {
   const fs = ctx.get('fs')
-  const describe = () => `日志 ${condition.path} 匹配 ${condition.matches}`
+  const describe = () => describeCondition(condition)
   if (fs === undefined) {
     return {
       label: condition.label,
@@ -723,6 +739,8 @@ async function runWaitUntil(ctx, args, exec) {
   const startedAt = Date.now()
   const conditions = normalizeConditions(args.conditions)
   const failFast = normalizeFailFast(args.fail_fast)
+  const matchMode = args.match ?? 'all'
+  if (!MATCH_MODES.has(matchMode)) throw new Error('match 只能是 all / any')
   const hasJobCondition = conditions.some((condition) => condition.kind === 'job')
   const defaultTimeout = hasJobCondition ? DEFAULT_JOB_TIMEOUT_SEC : DEFAULT_TIMEOUT_SEC
   const timeoutMs = clamp(numberOr(args.timeout_sec, defaultTimeout), MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC) * 1000
@@ -735,7 +753,7 @@ async function runWaitUntil(ctx, args, exec) {
   const tailBytes = clamp(numberOr(args.output_tail_bytes, DEFAULT_TAIL_BYTES), MIN_TAIL_BYTES, MAX_TAIL_BYTES)
 
   const deadline = startedAt + timeoutMs
-  let rows = conditions.map((condition) => ({ condition: condition.label, state: 'pending', detail: '等待解析工作目录' }))
+  let rows = conditions.map((condition) => ({ condition: describeCondition(condition), state: 'pending', detail: '等待解析工作目录' }))
   let latestTail = ''
   const finish = (status, extra = {}) => buildResult(status, startedAt, {
     rows: rows.map((row) => ({ condition: row.condition, state: row.state, detail: row.detail })),
@@ -772,6 +790,23 @@ async function runWaitUntil(ctx, args, exec) {
     const { index, probe, state } = observedJobFailure
     const condition = probe.describe()
     rows[index] = { condition, state: state.fatal === undefined ? 'failed' : 'error', detail: state.fatal ?? state.detail }
+    // 首轮早期失败会在工作目录解析前返回；其它作业条件用已建立的探针补齐快照，
+    // 否则模型只能看到占位描述。peek 是同步读取，不提交进展。
+    for (const [rowIndex, other] of jobProbes) {
+      if (rowIndex === index) continue
+      let observed
+      try {
+        observed = other.peek()
+      } catch {
+        continue
+      }
+      if (observed === undefined || observed.fatal !== undefined) continue
+      if (typeof observed.detail === 'string') rows[rowIndex].detail = observed.detail
+      rows[rowIndex].state = observed.satisfied === true ? 'satisfied' : 'pending'
+    }
+    for (const row of rows) {
+      if (row.detail === '等待解析工作目录') row.detail = '本次等待在工作目录解析前就已返回，未开始观察'
+    }
     const matched = rows
       .filter((row, rowIndex) => row.state === 'satisfied' || (rowIndex === index && state.satisfied === true))
       .map((row) => row.condition)
@@ -861,14 +896,16 @@ async function runWaitUntil(ctx, args, exec) {
         if (state?.fatal !== undefined) {
           row.state = 'error'
           row.detail = state.fatal
-          fatal = state.fatal
-          break
+          if (fatal === undefined) fatal = state.fatal
+          if (matchMode !== 'any') break
+          continue
         }
         if (state?.unsupported !== undefined) {
           row.state = 'unsupported'
           row.detail = state.unsupported
-          fatal = state.unsupported
-          break
+          if (fatal === undefined) fatal = state.unsupported
+          if (matchMode !== 'any') break
+          continue
         }
         if (state?.error !== undefined) {
           row.state = 'error'
@@ -886,8 +923,8 @@ async function runWaitUntil(ctx, args, exec) {
         }
         if (state?.fail !== undefined && failFast.enabled) {
           row.state = 'failed'
-          failure = state.fail
-          break
+          if (failure === undefined) failure = state.fail
+          if (matchMode !== 'any') break
         }
       }
 
@@ -895,6 +932,14 @@ async function runWaitUntil(ctx, args, exec) {
       if (exec.signal.aborted) return finish('cancelled')
       if (now >= deadline) return timedOut()
       if (observedJobFailure !== undefined) return finishJobFailure()
+      if (matchMode === 'any' && matched.length > 0) {
+        const unmet = rows.filter((row) => row.state !== 'satisfied')
+        const failedCount = unmet.filter((row) => row.state === 'failed' || row.state === 'error').length
+        const hint = unmet.length === 0
+          ? undefined
+          : `match=any：任一条件满足即返回 completed。其余 ${unmet.length} 个条件仍未满足${failedCount > 0 ? `（其中 ${failedCount} 个已失败或读取错误）` : ''}，不要假定它们已完成；需要全部完成时改用 match=all，或只对剩余条件再等待一次。`
+        return finish('completed', { matched, hint })
+      }
       if (fatal !== undefined) return finish('failed', { failureReason: fatal, matched })
       if (failure !== undefined) return finish('failed', { failureReason: failure.reason, tail: failure.tail ?? latestTail, matched })
       if (allSatisfied && matched.length === probes.length) return finish('completed', { matched })
@@ -958,8 +1003,13 @@ const WAIT_UNTIL_PARAMETERS = {
   properties: {
     conditions: {
       type: 'array',
-      description: '要等待的条件，全部满足才返回 completed（wait_all 语义）。log.matches 和 agent.status_changed 保留本次调用内已观察到的事件；file.exists 等状态条件仍反映当前观察。fail_fast 命中时优先返回 failed。',
+      description: '要等待的条件。默认全部满足才返回 completed（match=all）；match=any 时任一满足即返回。log.matches 和 agent.status_changed 保留本次调用内已观察到的事件；file.exists 等状态条件仍反映当前观察。fail_fast 命中时优先返回 failed。',
       items: CONDITION_SCHEMA,
+    },
+    match: {
+      type: 'string',
+      enum: ['all', 'any'],
+      description: '条件满足的判定方式。all（默认）：全部条件都满足才返回 completed；any：任一条件满足即返回 completed，其余条件状态保留在 conditions 快照中；没有任何条件满足时，fail_fast 仍可短路为 failed。',
     },
     fail_fast: {
       oneOf: [
@@ -1056,7 +1106,8 @@ const WAIT_UNTIL_USAGE_HINT = `wait_until 用法（全部条件满足、命中 f
   wait_until({conditions:[{kind:"file",path:"<path>",until:"exists"}]})                  // 等文件出现
   wait_until({conditions:[{kind:"file",path:"<path>",until:"changed"}], timeout_sec:900, stall_after_sec:120})  // 等文件相对首次观察发生变化，无可观察进展时提前返回
   wait_until({conditions:[{kind:"log",path:"<path>",matches:"/DONE|EXIT=0/"}]})          // 等日志关键字
-  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:120})  // 等队友`
+  wait_until({conditions:[{kind:"agent",target:"<name>",until:"inactive"}], timeout_sec:600, stall_after_sec:120})  // 等队友
+  wait_until({conditions:[...], match:"any"})                                            // 任一条件满足即返回（竞速/多源）`
 
 /**
  * 拦截「用 sleep 空等」的前台 bash 调用。
@@ -1138,7 +1189,7 @@ export function apply(ctx) {
   // 第三层：替代原语本身——事件驱动的等待。
   ctx.tools.register({
     name: 'wait_until',
-    description: '事件驱动的等待：全部条件满足、命中早期失败或整组无可观察进展时提前返回。适用于后台作业（job_output 的 id）、团队成员、文件出现/变化、日志正则命中。返回统一的 status（completed/failed/stalled/timeout/cancelled）、elapsed、conditions、failure_reason、output_tail；completed 表示条件满足，不保证目标执行成功。取消只结束本次等待。作业事件会立即唤醒，不受 poll_interval_sec 限制。',
+    description: '事件驱动的等待：全部条件满足、命中早期失败或整组无可观察进展时提前返回。适用于后台作业（job_output 的 id）、团队成员、文件出现/变化、日志正则命中。返回统一的 status（completed/failed/stalled/timeout/cancelled）、elapsed、conditions、failure_reason、output_tail；completed 表示条件满足，不保证目标执行成功。取消只结束本次等待。作业事件会立即唤醒，不受 poll_interval_sec 限制。match 默认 all（全部满足才返回）；match:"any" 时任一条件满足即返回，其余条件的状态仍在 conditions 中。',
     parameters: WAIT_UNTIL_PARAMETERS,
     output: {
       schema: WAIT_UNTIL_RESULT_SCHEMA,

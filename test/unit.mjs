@@ -137,9 +137,11 @@ function createMockJobs() {
 
 function createMockFs() {
   const files = new Map()
+  const denied = new Set()
   const encode = (text) => new TextEncoder().encode(text)
   return {
     async resolve(path) {
+      if (denied.has(path)) throw new Error('EACCES: ' + path)
       return { targetKey: path, displayPath: path }
     },
     async stat(target) {
@@ -157,6 +159,9 @@ function createMockFs() {
     },
     __remove(path) {
       files.delete(path)
+    },
+    __deny(path) {
+      denied.add(path)
     },
   }
 }
@@ -339,6 +344,96 @@ async function testWaitAllSemantics() {
   const jobRow = result.conditions.find((row) => row.condition.includes('后台作业'))
   equal(fileRow.state, 'satisfied', 'wait_all：文件条件应记为 satisfied')
   equal(jobRow.state, 'pending', 'wait_all：作业条件应仍为 pending')
+}
+
+async function testMatchAnyFirstCompletion() {
+  const jobs = createMockJobs()
+  jobs.__seed('job-any-running', { status: 'running', chunks: [{ at: 0, text: 'working\n' }] })
+  const fs = createMockFs()
+  fs.__set('/tmp/any-first.txt', 'ok')
+  const harness = createHarness({ jobs, fs })
+  const { result, elapsedMs } = await runWaitUntil(harness, {
+    conditions: [
+      { kind: 'file', path: '/tmp/any-first.txt', until: 'exists' },
+      { kind: 'job', id: 'job-any-running' },
+    ],
+    match: 'any',
+    timeout_sec: 5,
+    poll_interval_sec: 0.25,
+  })
+  assertShape(result, 'match=any 首个满足')
+  equal(result.status, 'completed', 'match=any：任一满足即 completed')
+  check(elapsedMs < 2000, 'match=any：应立即返回', '实际 ' + elapsedMs + 'ms')
+  const fileRow = result.conditions.find((row) => row.condition.includes('文件'))
+  const jobRow = result.conditions.find((row) => row.condition.includes('后台作业'))
+  equal(fileRow.state, 'satisfied', 'match=any：满足条件应记为 satisfied')
+  equal(jobRow.state, 'pending', 'match=any：未满足条件应保留 pending')
+  check(typeof result.hint === 'string' && result.hint.includes('仍未满足'), 'match=any：hint 应提示其余条件未满足', String(result.hint))
+}
+
+async function testMatchAnyToleratesObservationError() {
+  const fs = createMockFs()
+  fs.__set('/tmp/any-ready.txt', 'ok')
+  fs.__deny('/tmp/any-blocked.txt')
+  const harness = createHarness({ fs })
+  const { result } = await runWaitUntil(harness, {
+    conditions: [
+      { kind: 'file', path: '/tmp/any-ready.txt', until: 'exists' },
+      { kind: 'file', path: '/tmp/any-blocked.txt', until: 'exists' },
+    ],
+    match: 'any',
+    timeout_sec: 5,
+    poll_interval_sec: 0.25,
+  })
+  equal(result.status, 'completed', 'match=any：其它条件无法观察不应遮蔽已满足条件')
+  check(typeof result.hint === 'string' && result.hint.includes('失败或读取错误'), 'match=any：hint 应说明存在失败或读取错误', String(result.hint))
+}
+
+async function testMatchValidation() {
+  const harness = createHarness({ jobs: createMockJobs() })
+  let threw = false
+  try {
+    await runWaitUntil(harness, { conditions: [{ kind: 'job', id: 'j' }], match: 'sometimes' })
+  } catch {
+    threw = true
+  }
+  check(threw, 'match 非法值应被拒绝')
+}
+
+async function testEarlyFailureSnapshot() {
+  const jobs = createMockJobs()
+  jobs.__seed('job-snap-ok', { status: 'completed', detail: 'exit code: 0', chunks: [{ at: 0, text: 'ok\n' }] })
+  jobs.__seed('job-snap-bad', { status: 'completed', detail: 'exit code: 3', chunks: [{ at: 0, text: '[stderr]boom\n' }] })
+  const harness = createHarness({
+    jobs,
+    workingDirectory: { ensure: async () => { await sleep(150); return '/tmp' } },
+  })
+  const { result } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'job', id: 'job-snap-ok' }, { kind: 'job', id: 'job-snap-bad' }],
+    fail_fast: true,
+    timeout_sec: 5,
+    poll_interval_sec: 0.25,
+  })
+  equal(result.status, 'failed', '早期失败快照：应立即 failed')
+  for (const row of result.conditions) {
+    check(!String(row.condition).startsWith('conditions['), '早期失败快照：条件描述不应是占位符', String(row.condition))
+  }
+  check(result.conditions.some((row) => row.condition.includes('job-snap-bad') && row.state === 'failed'), '早期失败快照：失败项应点名作业')
+  check(result.conditions.some((row) => row.condition.includes('job-snap-ok') && row.state === 'satisfied'), '早期失败快照：同时结束的成功作业应记为 satisfied')
+}
+
+async function testUnparsedExitIsAnnotated() {
+  const jobs = createMockJobs()
+  jobs.__seed('job-nodetail', { status: 'completed', chunks: [{ at: 0, text: 'done\n' }] })
+  const harness = createHarness({ jobs })
+  const { result } = await runWaitUntil(harness, {
+    conditions: [{ kind: 'job', id: 'job-nodetail' }],
+    fail_fast: true,
+    timeout_sec: 5,
+    poll_interval_sec: 0.25,
+  })
+  equal(result.status, 'completed', '退出码缺失：作业结束应按 completed 返回')
+  check(String(result.conditions[0].detail).includes('未报告退出码'), '退出码缺失：detail 应标注未报告退出码', String(result.conditions[0].detail))
 }
 
 async function testStall() {
@@ -1495,6 +1590,11 @@ const cases = [
   testNonZeroExitIsFailure,
   testBatchFailFast,
   testWaitAllSemantics,
+  testMatchAnyFirstCompletion,
+  testMatchAnyToleratesObservationError,
+  testMatchValidation,
+  testEarlyFailureSnapshot,
+  testUnparsedExitIsAnnotated,
   testFileExists,
   testFileChanged,
   testLogMatchesExisting,

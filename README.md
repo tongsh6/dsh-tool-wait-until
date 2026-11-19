@@ -5,7 +5,7 @@
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/tongsh6/dsh-tool-wait-until)
 [![DSH Plugin Hub: listed](https://dshpluginhub.ai/badges/plugins/dsh-tool-wait-until.svg)](https://dshpluginhub.ai/plugins/dsh-tool-wait-until)
 
-> **版本说明**：本说明对应 **v1.2.0**。功能契约、实测环境与验证边界见 [验收记录](docs/acceptance.md)；发布状态以对应 tag 工作流和 npm 版本实际记录为准。
+> **版本说明**：本说明对应 **v1.3.0**。相对 v1.2.0 新增 `match: 'all' | 'any'`（默认 all，向后兼容），并让首轮早期失败返回完整的条件快照。功能契约、实测环境与验证边界见 [验收记录](docs/acceptance.md)；发布状态以对应 tag 工作流和 npm 版本实际记录为准。
 
 **Condition-based waiting for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).** The `wait_until` tool waits for jobs, teammates, files and log matches, then returns structured evidence for the next decision. Job events wake the wait immediately; file, log and teammate conditions are sampled at `poll_interval_sec` (default 2s).
 
@@ -68,9 +68,20 @@ wait_until({
 
 `completed` 表示**等待条件满足**，不保证目标任务成功；例如关闭 fail-fast 后，失败作业也可以满足“已经结束”条件。`failed` 既可能来自目标失败，也可能来自无法继续观察的错误。`stalled` 表示整组在窗口内没有观察到进展，不等于已经证明进程卡死。超时和取消分别使用独立状态。
 
-多个 `conditions` 采用 **wait_all**：当前状态条件需要在检查时仍满足，事件条件在本次调用中一旦观察到即可保留。任一启用的 fail-fast 规则命中会提前返回。当前没有 `wait_any` 接口，拆成多次顺序调用也不等价于“任一完成”。
+多个 `conditions` 默认采用 **wait_all**：当前状态条件需要在检查时仍满足，事件条件在本次调用中一旦观察到即可保留。任一启用的 fail-fast 规则命中会提前返回。`match: 'any'` 时改为 **wait_any**：任一条件满足即返回 `completed`，其余条件保留在 `conditions` 快照中。
 
 `output_tail` 是最近的相关输出，批量等待时不保证合并所有目标的日志；需要完整日志时仍应读取相应作业。
+
+### match：全部满足还是任一满足
+
+| 取值 | 判定 | 适用场景 |
+| --- | --- | --- |
+| `all`（默认） | 全部条件都满足才 `completed` | 汇总多个并行任务、等全部产物就绪 |
+| `any` | 任一条件满足即 `completed`，其余条件状态保留在 `conditions` 中 | 多源竞速、等任一日志出现或任一任务先返回 |
+
+`any` 的失败语义：本轮没有任何条件满足时，`fail_fast` 仍可短路为 `failed`；若同轮既有条件满足又有失败，**以满足为先**返回 `completed`，失败与读取错误保留在 `conditions[].state` / `detail`，`hint` 会提示还有几个条件未满足。这是显式取舍：`any` 表达“我要一个成功结果”，不是“我确认没有失败”；需要后者请用 `all`。
+
+`any` 不改变 stall 判定：仍是整组连续无可观察进展时才返回 `stalled`。
 
 ### 条件语义
 
@@ -115,6 +126,9 @@ wait_until({
 - 仅靠文件版本与尺寸，不能保证区分同一轮询间隙内“替换成更大的文件”和“原文件正常追加”。
 - 日志按字节窗口读取，多字节字符跨窗口时可能出现替换符；匹配复杂非 ASCII 内容时需要考虑这个限制。
 - agent 的进展信号来自成员状态和 diagnostics，无法证明其内部每一步工作是否推进；长任务状态不变不等于卡死。
+- `match: 'any'` 的 `completed` 只表示“至少一个条件满足”，其余条件可能仍在运行或已失败；调用方必须读取 `conditions` 才能判断整体状态。
+- 早期失败可能在工作目录解析前返回：此时 job 条件仍用已建立的探针补齐快照，file / log / agent 条件标注为“未开始观察”，不会显示 `conditions[N]` 占位。
+- 宿主未提供可解析退出码时，作业结束仍按“已结束”处理，但 detail 会标注“未报告退出码，按已结束处理”，避免把无信号当成成功信号。
 
 ## 行为拦截
 
@@ -165,7 +179,7 @@ docs/                      验收与历史基线，不发布到 npm
 node test/unit.mjs
 ```
 
-覆盖目标失败、fail-fast 选择、退出标记边界、事件锁存、取消和挂起 I/O 的 deadline、混合挂起 I/O 中的 job 提前失败、初扫、清理、整组 stall、文件与日志变化、错误证据以及有限 guard 词法。断言数以当次输出为准；1.2.0 的完整单测、旧实现红验证及真实进程立即/3秒/5秒失败记录见 [验收记录](docs/acceptance.md)。
+覆盖目标失败、fail-fast 选择、退出标记边界、事件锁存、取消和挂起 I/O 的 deadline、混合挂起 I/O 中的 job 提前失败、初扫、清理、整组 stall、文件与日志变化、错误证据、有限 guard 词法，以及 `match: 'all' | 'any'` 的判定、首轮早期失败的快照完整性与无退出码标注。当前 mock 单测为 51 个用例、820 条断言；断言数以当次 `node test/unit.mjs` 输出为准。1.2.0 的历史记录见 [验收记录](docs/acceptance.md)。
 
 独立宿主核心服务验证入口为 `test/host-smoke.mjs --runtime-root <DSH根目录>`，根目录应包含 `node_modules/@deepseek-ai`。本机 DSH 0.2.2-rc.3 的实际 Electron Node 命令、真实服务与测试夹具的边界，以及通过结果均记录在验收文档中；没有用该结果声称完整 Desktop、Agent Teams 或模型行为已经通过。
 
